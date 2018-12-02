@@ -46,6 +46,7 @@ pub trait Filter {
     fn run_from_bytes(&self, bytes: &[u8]) -> goblin::error::Result<FilteredSymbols> {
         match goblin::Object::parse(&bytes)? {
             goblin::Object::Elf(elf) => {
+                // Undefined symbols need to be exported for dynamic linking
                 let (undefined_symbols, defined_symbols): (Vec<_>, Vec<_>) = elf
                     .syms
                     .iter()
@@ -58,8 +59,6 @@ pub trait Filter {
                             itertools::Either::Right(symbol_name)
                         }
                     });
-
-                // Undefined symbols need to be exported for dynamic linking
                 let mut symbols = FilteredSymbols {
                     export: undefined_symbols,
                     strip: Vec::new(),
@@ -68,9 +67,40 @@ pub trait Filter {
                 symbols.merge(Self::filter(&defined_symbols));
                 Ok(symbols)
             }
+            goblin::Object::Mach(mach) => {
+                match mach {
+                    goblin::mach::Mach::Fat(_fat) => Ok(FilteredSymbols::new()),
+                    goblin::mach::Mach::Binary(macho) => {
+                        // Undefined symbols need to be exported for dynamic linking
+                        let (undefined_symbols, defined_symbols): (
+                            Vec<_>,
+                            Vec<_>,
+                        ) = macho
+                            .symbols()
+                            .filter_map(|x| x.ok())
+                            .filter(|x| x.0 != "")
+                            .partition_map(|x| {
+                                let symbol_name = x.0.to_string();
+                                if x.1.is_undefined() {
+                                    itertools::Either::Left(symbol_name)
+                                } else {
+                                    itertools::Either::Right(symbol_name)
+                                }
+                            });
+                        let mut symbols = FilteredSymbols {
+                            export: undefined_symbols,
+                            strip: Vec::new(),
+                        };
+
+                        symbols.merge(Self::filter(&defined_symbols));
+                        Ok(symbols)
+                    }
+                }
+            }
             goblin::Object::Archive(archive) => {
                 let mut symbols = FilteredSymbols::new();
                 for member in archive.members() {
+                    println!("Parsing archive member: {}", member);
                     symbols.merge(self.run_from_bytes(archive.extract(member, &bytes)?)?);
                 }
                 Ok(symbols)
