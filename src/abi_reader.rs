@@ -44,7 +44,7 @@ pub trait Filter {
     fn filter(&Vec<String>) -> FilteredSymbols;
 
     fn run_from_bytes(&self, bytes: &[u8]) -> goblin::error::Result<FilteredSymbols> {
-        let symbols = match goblin::Object::parse(&bytes)? {
+        match goblin::Object::parse(&bytes)? {
             goblin::Object::Elf(elf) => {
                 let (undefined_symbols, defined_symbols): (Vec<_>, Vec<_>) = elf
                     .syms
@@ -66,18 +66,17 @@ pub trait Filter {
                 };
 
                 symbols.merge(Self::filter(&defined_symbols));
-                symbols
+                Ok(symbols)
             }
             goblin::Object::Archive(archive) => {
                 let mut symbols = FilteredSymbols::new();
                 for member in archive.members() {
                     symbols.merge(self.run_from_bytes(archive.extract(member, &bytes)?)?);
                 }
-                symbols
+                Ok(symbols)
             }
-            _ => FilteredSymbols::new(),
-        };
-        Ok(symbols)
+            _ => Ok(FilteredSymbols::new()),
+        }
     }
 
     fn run_from_file(&self, path_arg: &str) -> goblin::error::Result<FilteredSymbols> {
