@@ -1,10 +1,25 @@
 extern crate goblin;
 
+use itertools::Itertools;
 use std::io::Read;
 
 pub struct FilteredSymbols {
     export: Vec<String>,
     strip: Vec<String>,
+}
+
+impl FilteredSymbols {
+    fn new() -> Self {
+        FilteredSymbols {
+            export: Vec::new(),
+            strip: Vec::new(),
+        }
+    }
+
+    fn merge(&mut self, other: FilteredSymbols) {
+        self.export.extend(other.export);
+        self.strip.extend(other.strip);
+    }
 }
 
 impl std::fmt::Display for FilteredSymbols {
@@ -28,28 +43,50 @@ impl std::fmt::Display for FilteredSymbols {
 pub trait Filter {
     fn filter(&Vec<String>) -> FilteredSymbols;
 
-    fn run(&self, path_arg: &str) -> goblin::error::Result<()> {
-        println!("Parsing {}", path_arg);
+    fn run_from_bytes(&self, bytes: &[u8]) -> goblin::error::Result<FilteredSymbols> {
+        let symbols = match goblin::Object::parse(&bytes)? {
+            goblin::Object::Elf(elf) => {
+                let (undefined_symbols, defined_symbols): (Vec<_>, Vec<_>) = elf
+                    .syms
+                    .iter()
+                    .filter(|x| &elf.strtab[x.st_name] != "")
+                    .partition_map(|x| {
+                        let symbol_name = String::from(&elf.strtab[x.st_name]);
+                        if x.st_value == 0 {
+                            itertools::Either::Left(symbol_name)
+                        } else {
+                            itertools::Either::Right(symbol_name)
+                        }
+                    });
+
+                // Undefined symbols need to be exported for dynamic linking
+                let mut symbols = FilteredSymbols {
+                    export: undefined_symbols,
+                    strip: Vec::new(),
+                };
+
+                symbols.merge(Self::filter(&defined_symbols));
+                symbols
+            }
+            goblin::Object::Archive(archive) => {
+                let mut symbols = FilteredSymbols::new();
+                for member in archive.members() {
+                    symbols.merge(self.run_from_bytes(archive.extract(member, &bytes)?)?);
+                }
+                symbols
+            }
+            _ => FilteredSymbols::new(),
+        };
+        Ok(symbols)
+    }
+
+    fn run_from_file(&self, path_arg: &str) -> goblin::error::Result<FilteredSymbols> {
         let path = std::path::Path::new(path_arg);
         let mut fd = std::fs::File::open(path)?;
         let mut buffer = Vec::new();
         fd.read_to_end(&mut buffer)?;
-        let symbols = match goblin::Object::parse(&buffer)? {
-            goblin::Object::Elf(elf) => elf
-                .syms
-                .iter()
-                .filter(|x| {
-                    x.st_value != 0 && match goblin::elf::sym::st_type(x.st_info) {
-                        goblin::elf::sym::STT_SECTION => false,
-                        _ => true,
-                    }
-                }).map(|x| String::from(&elf.strtab[x.st_name]))
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
-        };
-        let filtered_symbols = Self::filter(&symbols);
-        print!("{}", filtered_symbols);
-        Ok(())
+        let filtered_symbols = self.run_from_bytes(&buffer)?;
+        Ok(filtered_symbols)
     }
 }
 

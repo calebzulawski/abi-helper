@@ -1,4 +1,5 @@
 extern crate clap;
+extern crate itertools;
 mod abi_reader;
 use abi_reader::*;
 
@@ -13,13 +14,22 @@ fn main() {
 
     if let Some(files) = m.values_of("export") {
         for file in files {
-            abi_reader::Export::new().run(file).unwrap();
+            println!("Parsing {}", file);
+            match abi_reader::Export::new().run_from_file(file) {
+                Ok(symbols) => print!("{}", symbols),
+                Err(error) => println!("Error: {}", error.description()),
+            }
         }
     }
 
     if let Some(files) = m.values_of("strip") {
         for file in files {
-            abi_reader::Strip::new().run(file).unwrap();
+            println!("Parsing {}", file);
+            match abi_reader::Strip::new().run_from_file(file) {
+                Ok(symbols) => print!("{}", symbols),
+                Err(error) => println!("Error: {}", error.description()),
+            }
         }
     }
+    println!("Done!")
 }

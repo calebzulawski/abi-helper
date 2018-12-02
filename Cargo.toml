@@ -7,3 +7,4 @@ description = "automatically generates ABI configuration files for linkers"
 [dependencies]
 clap = {version = "2.32", features = ["yaml", "suggestions", "color"]}
 goblin = "0.0.19"
+itertools = "0.7"
