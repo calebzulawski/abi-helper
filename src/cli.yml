@@ -1,0 +1,26 @@
+name: abi-helper # present because of clap #1338
+args:
+    - export:
+        short: e
+        long: export
+        value_name: OBJECT
+        help: export all symbols in OBJECT
+        multiple: true
+        takes_value: true
+        number_of_values: 1
+    - strip:
+        short: s
+        long: strip
+        value_name: OBJECT
+        help: strip all symbols in OBJECT
+        multiple: true
+        takes_value: true
+        number_of_values: 1
+    - filter:
+        short: f
+        long: filter
+        value_names: RULE OBJECT
+        help: filter all symbols in OBJECT according to RULE
+        multiple: true
+        takes_value: true
+        number_of_values: 2
