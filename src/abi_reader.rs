@@ -1,4 +1,7 @@
+extern crate custom_error;
 extern crate goblin;
+extern crate regex;
+extern crate yaml_rust;
 
 use itertools::Itertools;
 use std::io::Read;
@@ -41,7 +44,7 @@ impl std::fmt::Display for FilteredSymbols {
 }
 
 pub trait Filter {
-    fn filter(&Vec<String>) -> FilteredSymbols;
+    fn filter(&self, Vec<String>) -> FilteredSymbols;
 
     fn run_from_bytes(&self, bytes: &[u8]) -> goblin::error::Result<FilteredSymbols> {
         match goblin::Object::parse(&bytes)? {
@@ -64,7 +67,7 @@ pub trait Filter {
                     strip: Vec::new(),
                 };
 
-                symbols.merge(Self::filter(&defined_symbols));
+                symbols.merge(self.filter(defined_symbols));
                 Ok(symbols)
             }
             goblin::Object::Mach(mach) => {
@@ -92,7 +95,7 @@ pub trait Filter {
                             strip: Vec::new(),
                         };
 
-                        symbols.merge(Self::filter(&defined_symbols));
+                        symbols.merge(self.filter(defined_symbols));
                         Ok(symbols)
                     }
                 }
@@ -126,9 +129,9 @@ impl Export {
     }
 }
 impl Filter for Export {
-    fn filter(symbols: &Vec<String>) -> FilteredSymbols {
+    fn filter(&self, symbols: Vec<String>) -> FilteredSymbols {
         FilteredSymbols {
-            export: symbols.clone(),
+            export: symbols,
             strip: Vec::new(),
         }
     }
@@ -141,10 +144,128 @@ impl Strip {
     }
 }
 impl Filter for Strip {
-    fn filter(symbols: &Vec<String>) -> FilteredSymbols {
+    fn filter(&self, symbols: Vec<String>) -> FilteredSymbols {
         FilteredSymbols {
             export: Vec::new(),
-            strip: symbols.clone(),
+            strip: symbols,
+        }
+    }
+}
+
+fn yaml_string(x: &str) -> yaml_rust::Yaml {
+    yaml_rust::Yaml::String(x.to_string())
+}
+
+custom_error::custom_error!{pub RulesError
+    FileError{source: std::io::Error}                 = "could not open configuration file",
+    ParseError{source: yaml_rust::scanner::ScanError} = "could not parse configuration file as YAML",
+    ConfigurationError                                = "configuration is not valid",
+    RegexError{source: regex::Error}                  = "invalid regex",
+}
+
+pub struct Rules {
+    export_matching: bool,
+    regex: regex::RegexSet,
+}
+
+fn rules_to_regex(rules: &yaml_rust::Yaml) -> Result<regex::RegexSet, RulesError> {
+    let mut re: Vec<String> = Vec::new();
+    let rules_map = rules.as_hash().ok_or(RulesError::ConfigurationError)?;
+
+    if let Some(regex_rules) = rules_map.get(&yaml_string("regex")) {
+        match regex_rules {
+            yaml_rust::Yaml::String(string) => re.push(string.to_string()),
+            yaml_rust::Yaml::Array(array) => {
+                for string in array {
+                    re.push(
+                        string
+                            .as_str()
+                            .ok_or(RulesError::ConfigurationError)?
+                            .to_string(),
+                    );
+                }
+            }
+            _ => return Err(RulesError::ConfigurationError),
+        };
+    };
+
+    if let Some(exact_rules) = rules_map.get(&yaml_string("exact")) {
+        match exact_rules {
+            yaml_rust::Yaml::String(string) => re.push(format!("^{}$", string)),
+            yaml_rust::Yaml::Array(array) => {
+                for string in array {
+                    re.push(format!(
+                        "^{}$",
+                        string
+                            .as_str()
+                            .ok_or(RulesError::ConfigurationError)?
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => return Err(RulesError::ConfigurationError),
+        }
+    }
+
+    if re.is_empty() {
+        Err(RulesError::ConfigurationError)
+    } else {
+        Ok(regex::RegexSet::new(re)?)
+    }
+}
+
+impl Rules {
+    pub fn new(config_path: &str) -> Result<Self, RulesError> {
+        let path = std::path::Path::new(config_path);
+        let contents = std::fs::read_to_string(path)?;
+        let mut config = yaml_rust::YamlLoader::load_from_str(&contents)?;
+        if config.len() != 1 {
+            return Err(RulesError::ConfigurationError);
+        }
+        match config.pop().ok_or(RulesError::ConfigurationError)? {
+            yaml_rust::Yaml::Hash(hash) => {
+                let export_matching = hash
+                    .get(&yaml_string("export_matching"))
+                    .unwrap_or(&yaml_rust::Yaml::Boolean(true)) // default to true
+                    .as_bool()
+                    .ok_or(RulesError::ConfigurationError)?;
+
+                Ok(Rules {
+                    export_matching: export_matching,
+                    regex: rules_to_regex(
+                        hash.get(&yaml_string("rules"))
+                            .ok_or(RulesError::ConfigurationError)?, // rules must be present
+                    )?,
+                })
+            }
+            _ => Err(RulesError::ConfigurationError),
+        }
+    }
+}
+impl Filter for Rules {
+    fn filter(&self, mut symbols: Vec<String>) -> FilteredSymbols {
+        let (mut matched, mut not_matched) = (Vec::new(), Vec::new());
+        loop {
+            if let Some(symbol) = symbols.pop() {
+                if self.regex.is_match(&symbol) {
+                    matched.push(symbol);
+                } else {
+                    not_matched.push(symbol);
+                }
+            } else {
+                break;
+            }
+        }
+        if self.export_matching {
+            FilteredSymbols {
+                export: matched,
+                strip: not_matched,
+            }
+        } else {
+            FilteredSymbols {
+                export: not_matched,
+                strip: matched,
+            }
         }
     }
 }
